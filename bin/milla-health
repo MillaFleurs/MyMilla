@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+# Default config if not set
+if [ -z "${MILLA_CONFIG:-}" ] && [ -f "$HOME/milla/milla-config.yaml" ]; then
+  export MILLA_CONFIG="$HOME/milla/milla-config.yaml"
+fi
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-?" ]; then
+  echo "Usage: $0 (checks /health on running daemon)"
+  exit 0
+fi
+
+HEARTBEAT=$(clj -M -e "(require 'milla.server) (println (.getAbsolutePath (milla.server/pid-file)))" 2>/dev/null | tail -n 1)
+[ -z "$HEARTBEAT" ] && HEARTBEAT="$ROOT/milla.pid"
+HOST="127.0.0.1"
+PORT=""
+if [ -f "$HEARTBEAT" ]; then
+  PORT=$(grep -o '"port":[^,}]*' "$HEARTBEAT" | head -n1 | sed 's/[^0-9]//g')
+  H=$(grep -o '"host":[^,}]*' "$HEARTBEAT" | head -n1 | sed 's/.*"://; s/[\",} ]//g')
+  if [ -n "$H" ]; then HOST="$H"; fi
+fi
+
+if [ -z "$PORT" ]; then
+  echo "Server heartbeat not found."
+  exit 1
+fi
+
+curl -fsS "http://${HOST}:${PORT}/health" || exit 1
+echo

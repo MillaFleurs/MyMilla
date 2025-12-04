@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-?" ]; then
+  echo "Usage: $0 (interactive first-run helper)"
+  exit 0
+fi
+
+prompt_entries() {
+  local label="$1" kind="$2"
+  local entries=()
+  echo "Enter $label (one per line). Leave blank to finish."
+  while true; do
+    read -r line || break
+    [ -z "$line" ] && break
+    entries+=("$line")
+  done
+  if [ "${#entries[@]}" -gt 0 ]; then
+    for e in "${entries[@]}"; do
+      clj -M -e "(require 'milla.core) (milla.core/${kind} \"${e//\"/\\\"}\")"
+    done
+  fi
+}
+
+read -r -p "Where is this Milla instance running (location)? " LOC
+if [ -n "$LOC" ]; then
+  clj -M -e "(require 'milla.core) (milla.core/opinion \"Node location: ${LOC//\"/\\\"}\")"
+fi
+
+prompt_entries "facts to remember" "fact"
+prompt_entries "desires/goals" "desire"
+prompt_entries "opinions" "opinion"
+prompt_entries "backlog items" "backlog"
+
+echo "Setup complete."

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+# Default config if not set
+if [ -z "${MILLA_CONFIG:-}" ] && [ -f "$HOME/milla/milla-config.yaml" ]; then
+  export MILLA_CONFIG="$HOME/milla/milla-config.yaml"
+fi
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-?" ]; then
+  echo "Usage: $0 (starts daemon in foreground; inherits MILLA_CONFIG)"
+  exit 0
+fi
+
+exec clj -M -m milla.server "$@"

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-?" ]; then
+  echo "Usage: $0 (runs milla.core/init!)"
+  exit 0
+fi
+
+exec clj -M -e "(require 'milla.core) (milla.core/init!) (println \"DB initialized at\" (get-in milla.core/config [:db :path]))"

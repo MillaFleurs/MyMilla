@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+# Default config if not set
+if [ -z "${MILLA_CONFIG:-}" ] && [ -f "$HOME/milla/milla-config.yaml" ]; then
+  export MILLA_CONFIG="$HOME/milla/milla-config.yaml"
+fi
+
+# Help
+if [ "$#" -ge 1 ]; then
+  case "$1" in
+    -h|--help|-?) cat <<'EOF'
+Usage: bin/milla [model] "prompt"
+Forwards to running milla server if available; otherwise starts server and forwards.
+Environment: MILLA_CONFIG may point to config file.
+EOF
+    exit 0;;
+  esac
+fi
+
+MODEL=""
+PROMPT=""
+JSON=""
+
+HEARTBEAT=$(clj -M -e "(require 'milla.server) (println (.getAbsolutePath (milla.server/pid-file)))" 2>/dev/null | tail -n 1)
+[ -z "$HEARTBEAT" ] && HEARTBEAT="$ROOT/milla.pid"
+PORT=""
+HOST="127.0.0.1"
+
+build_payload() {
+  JSON="{\"prompt\":\"$PROMPT\""
+  if [ -n "$MODEL" ]; then
+    JSON="$JSON,\"model\":\"$MODEL\""
+  fi
+  JSON="$JSON}"
+}
+
+read_heartbeat() {
+  if [ -f "$HEARTBEAT" ]; then
+    PORT=$(grep -o '"port":[^,}]*' "$HEARTBEAT" | head -n1 | sed 's/[^0-9]//g')
+    H=$(grep -o '"host":[^,}]*' "$HEARTBEAT" | head -n1 | sed 's/.*"://; s/[\",} ]//g')
+    if [ -n "$H" ]; then HOST="$H"; fi
+  fi
+}
+
+MODEL="${1:-}"
+shift || true
+PROMPT="$*"
+if [ -z "$PROMPT" ]; then
+  PROMPT="$MODEL"
+  MODEL=""
+fi
+build_payload
+
+# Try existing server
+read_heartbeat
+if [ -n "$PORT" ]; then
+  curl -fsS -X POST "http://${HOST}:${PORT}/ask" \
+    -H "content-type: application/json" \
+    -d "$JSON"
+  exit $?
+fi
+
+# Start server in background and retry
+nohup "$ROOT/bin/milla-serve" >/tmp/milla-serve.log 2>&1 &
+sleep 1
+HEARTBEAT=$(clj -M -e "(require 'milla.server) (println (.getAbsolutePath (milla.server/pid-file)))" 2>/dev/null | tail -n 1)
+[ -z "$HEARTBEAT" ] && HEARTBEAT="$ROOT/milla.pid"
+read_heartbeat
+if [ -n "$PORT" ]; then
+  curl -fsS -X POST "http://${HOST}:${PORT}/ask" \
+    -H "content-type: application/json" \
+    -d "$JSON"
+  exit $?
+fi
+
+echo "Failed to start milla server; falling back to direct mode." >&2
+exec clj -M -m milla.core "$@"

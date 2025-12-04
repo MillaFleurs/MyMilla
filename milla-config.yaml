@@ -1,0 +1,12 @@
+db:
+  path: milla_memory.db
+
+node:
+  id: home-milla
+
+ollama:
+  url:  "http://localhost:11434/api/chat"
+  default_model: llama3.2
+
+chat:
+  default_session: default

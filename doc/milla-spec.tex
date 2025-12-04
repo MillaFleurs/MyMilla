@@ -1,0 +1,647 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{titling}
+
+\setlength{\parskip}{0.5em}
+\setlength{\parindent}{0pt}
+
+\title{Milla Brain Functional Specification}
+\author{Milla Project Docs}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Executive Summary}
+
+Milla Brain is a Clojure-based wrapper around a local Ollama LLM instance that:
+
+\begin{itemize}[nosep]
+  \item Provides a simple Lisp-like DSL \texttt{(fact ...)}, \texttt{(desire ...)}, \texttt{(opinion ...)} to store persistent knowledge about the user and environment.
+  \item Logs chat history (user prompts and model replies) to a SQLite database.
+  \item Exposes command-line and REPL/Emacs entrypoints for interactive use.
+  \item Supports multi-node ``kittens'': smaller Milla instances (e.g., a car/laptop node) that can synchronize their local brain with the home Milla via database synchronization.
+  \item Supports creation of a backlog of tasks and ideas via a dedicated tag so that Milla or her kittens can mark things to revisit later.
+  \item Is designed to be operated from Emacs (locally or remotely) so that the user can use it as a cognitive co-processor.
+\end{itemize}
+
+In later iterations, Milla Brain may be extended to propose and apply self-modifying changes to its own Clojure code and configuration, under human supervision and with safety checks.
+
+\section{Goals and Non-Goals}
+
+\subsection{Goals}
+
+\begin{enumerate}[label=G\arabic*., nosep]
+  \item \textbf{Persistent Memory}:
+    \begin{itemize}[nosep]
+      \item Store structured ``facts,'' ``desires,'' and ``opinions'' expressed via Clojure functions.
+      \item Store full chat transcripts (user and assistant) with timestamps.
+      \item Store backlog items, tagged explicitly, so that the system can track tasks to revisit later.
+    \end{itemize}
+  \item \textbf{Local LLM Integration (Ollama)}:
+    \begin{itemize}[nosep]
+      \item Send prompts to Ollama via HTTP.
+      \item Allow specifying \texttt{model}, \texttt{prompt}, and optional \texttt{system} prompt.
+      \item Persist both sides of the interaction.
+      \item Preferred runtime: long-lived HTTP daemon (\texttt{bin/milla-serve}); CLI forwards to the daemon if running.
+    \end{itemize}
+  \item \textbf{Developer-Friendly Interface}:
+    \begin{itemize}[nosep]
+      \item Provide a simple CLI for quick calls.
+      \item Provide a REPL-first workflow (CIDER + Emacs).
+    \end{itemize}
+  \item \textbf{Multi-node ``Kitten'' Sync}:
+    \begin{itemize}[nosep]
+      \item Allow one-way and two-way synchronization of SQLite databases between:
+        \begin{itemize}[nosep]
+          \item Home Milla (canonical or primary node), and
+          \item Remote Milla kittens (e.g., mobile or experimental nodes).
+        \end{itemize}
+      \item Use simple mechanisms such as \texttt{rsync} or attach/merge via SQLite.
+    \end{itemize}
+  \item \textbf{Remote Emacs Operation}:
+    \begin{itemize}[nosep]
+      \item Allow users to SSH into Milla, run Emacs locally or remotely, and control Milla Brain's REPL from Emacs (CIDER, TRAMP, ssh).
+    \end{itemize}
+  \item \textbf{Self-Reflection and Proposed Self-Modification (Experimental)}:
+    \begin{itemize}[nosep]
+      \item Allow Milla and her kittens to \emph{propose} changes to their own code and configuration (e.g., refactors, new helper functions) and store these proposals as backlog items.
+      \item Support controlled, human-reviewed application of such changes to avoid unsafe or destructive behavior.
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Non-Goals}
+
+\begin{itemize}[nosep]
+  \item Full-featured web UI (may be added later).
+  \item Complex automated conflict resolution for database synchronization; the initial version may treat:
+    \begin{itemize}[nosep]
+      \item The home node as canonical, or
+      \item Use a simple union-by-ID/timestamp strategy with manual conflict resolution.
+    \end{itemize}
+  \item Authentication and authorization for the local CLI/Ollama API (assume trusted LAN for now).
+\end{itemize}
+
+\section{System Overview}
+
+Milla Brain is both:
+
+\begin{itemize}[nosep]
+  \item A local service (Clojure code + SQLite DB + Ollama) and
+  \item A library that can be used from:
+    \begin{itemize}[nosep]
+      \item Command line (\texttt{bin/milla}, \texttt{clj -M -m milla.core ...}),
+      \item Clojure REPL (CIDER/Emacs),
+      \item Future: HTTP API or other UIs.
+    \end{itemize}
+\end{itemize}
+
+High-level flow:
+
+\begin{enumerate}[nosep]
+  \item User issues a prompt (via CLI or REPL) or calls one of the DSL forms (\texttt{fact}, \texttt{desire}, \texttt{opinion}, \texttt{backlog}).
+  \item Clojure code writes structured records to SQLite.
+  \item For chat:
+    \begin{enumerate}[label*=\arabic*.]
+      \item Construct a request to Ollama's \texttt{/api/chat} (normalized even if config points at \texttt{/api/generate}).
+      \item Send the request via \texttt{clj-http}.
+      \item Receive the model's reply and log it to the \texttt{chat} table.
+    \end{enumerate}
+  \item For statements (facts/desires/opinions/backlog):
+    \begin{enumerate}[label*=\arabic*.]
+      \item Insert rows into \texttt{statements} with appropriate kinds/tags.
+    \end{enumerate}
+  \item For kittens:
+    \begin{enumerate}[label*=\arabic*.]
+      \item Periodically or on demand, a synchronization script uses \texttt{rsync} or a merge procedure to synchronize SQLite databases between nodes.
+    \end{enumerate}
+\end{enumerate}
+
+\section{Repository Structure}
+
+Proposed top-level layout:
+
+\begin{verbatim}
+milla-clj/
+|-- README.md                 ; project overview, quickstart
+|-- deps.edn                  ; Clojure deps
+|-- .gitignore
+|-- milla_memory.db           ; SQLite database (ignored by git)
+|-- src/
+|   `-- milla/
+|       |-- core.clj          ; main API: ask!, fact/desire/opinion, init!
+|       |-- memory.clj        ; recall logic, system-prompt builder (planned)
+|       `-- sync.clj          ; helpers for DB sync (planned)
+|-- bin/
+|   |-- milla                 ; CLI wrapper script
+|   |-- milla-init-db         ; script to ensure DB schema exists
+|   `-- milla-sync-db         ; script to sync kitten <-> home DB
+`-- doc/
+    `-- milla-brain-spec.tex  ; this functional spec
+\end{verbatim}
+
+Additional files (e.g., \texttt{memory.clj}, \texttt{sync.clj}) can be introduced as functionality grows.
+
+\section{Key Files}
+
+\subsection{README.md (Outline)}
+
+The repository's \texttt{README.md} should include at least:
+
+\begin{enumerate}[label=R\arabic*., nosep]
+  \item Project name and purpose: ``Milla Brain -- Clojure/Ollama memory wrapper''.
+  \item Feature summary:
+    \begin{itemize}[nosep]
+      \item Local LLM (Ollama) integration.
+      \item Persistent memory: fact/desire/opinion/backlog DSL.
+      \item Chat logging to SQLite.
+      \item Multi-node kittens with DB synchronization.
+      \item Emacs/CIDER integration.
+    \end{itemize}
+  \item Requirements:
+    \begin{itemize}[nosep]
+      \item Java (OpenJDK),
+      \item Clojure CLI (\texttt{clj}),
+      \item Ollama running on \texttt{localhost:11434},
+      \item SQLite (through \texttt{org.xerial/sqlite-jdbc}).
+    \end{itemize}
+  \item Installation and setup:
+    \begin{itemize}[nosep]
+      \item Clone the repository,
+      \item Run \texttt{bin/milla-init-db} or \texttt{clj -M -m milla.core} once to initialize the DB.
+    \end{itemize}
+  \item Usage (CLI and REPL examples).
+  \item Database synchronization examples (\texttt{bin/milla-sync-db} + \texttt{rsync}).
+  \item Emacs integration notes (CIDER, TRAMP, remote workflows).
+\end{enumerate}
+
+\section{Functional Requirements}
+
+\subsection{Core Memory DSL}
+
+\paragraph{FR-1: Fact Storage}
+
+The system shall provide a function:
+
+\begin{verbatim}
+(fact & strings)
+\end{verbatim}
+
+Each string shall be stored as a separate row in \texttt{statements} with:
+
+\begin{itemize}[nosep]
+  \item \texttt{kind = "fact"},
+  \item \texttt{text = <string>},
+  \item \texttt{created\_at = current timestamp},
+  \item \texttt{source\_node = <this node ID>}.
+\end{itemize}
+
+\paragraph{FR-2: Desire Storage}
+
+The system shall provide:
+
+\begin{verbatim}
+(desire & strings)
+\end{verbatim}
+
+Each string shall be stored as \texttt{kind = "desire"} with the same metadata fields as facts.
+
+\paragraph{FR-3: Opinion Storage}
+
+The system shall provide:
+
+\begin{verbatim}
+(opinion & strings)
+\end{verbatim}
+
+Each string shall be stored as \texttt{kind = "opinion"} with the same metadata fields as facts.
+
+\paragraph{FR-4: Backlog Storage}
+
+The system shall provide a way to create backlog items. This may be either:
+
+\begin{itemize}[nosep]
+  \item A separate function:
+\begin{verbatim}
+(backlog & strings)
+\end{verbatim}
+  \item Or a tagged variant of \texttt{fact}/\texttt{desire} that sets a \texttt{backlog} flag.
+\end{itemize}
+
+Each backlog string shall be stored with:
+
+\begin{itemize}[nosep]
+  \item Either \texttt{kind = "backlog"} \emph{or} a combination of \texttt{kind} and \texttt{tag},
+  \item \texttt{text = <string>},
+  \item \texttt{created\_at = current timestamp},
+  \item \texttt{source\_node = <this node ID>}.
+\end{itemize}
+
+The backlog shall be queryable (e.g., by a function \texttt{(backlog-items)}), so that Milla or a human can periodically review tasks and ideas ``to deal with later.''
+
+\paragraph{FR-5: Initialization}
+
+The function \texttt{(init!)} shall ensure all required tables exist, creating them if they do not.
+
+\subsection{Chat Interface}
+
+\paragraph{FR-6: Ask the Model}
+
+The system shall provide:
+
+\begin{verbatim}
+(ask! {:keys [model prompt system session]})
+\end{verbatim}
+
+\begin{itemize}[nosep]
+  \item Required keys: \texttt{model}, \texttt{prompt}.
+  \item Optional keys:
+    \begin{itemize}[nosep]
+      \item \texttt{system}: string containing additional instructions and possibly facts/desires/opinions/backlog context.
+      \item \texttt{session}: string to group related messages (\texttt{"default"} if omitted).
+    \end{itemize}
+\end{itemize}
+
+Behavior:
+
+\begin{enumerate}[nosep]
+  \item Ensure the database schema exists via \texttt{init!}.
+  \item Insert a user message into the \texttt{chat} table with:
+    \begin{itemize}[nosep]
+      \item \texttt{role = "user"},
+      \item \texttt{model}, \texttt{content = prompt},
+      \item \texttt{session},
+      \item \texttt{created\_at}, \texttt{source\_node}.
+    \end{itemize}
+  \item Call Ollama's \texttt{/api/chat} endpoint with:
+    \begin{itemize}[nosep]
+      \item \texttt{model},
+      \item \texttt{messages} (chat format; includes system prompt plus history/summaries),
+      \item \texttt{stream = false},
+      \item \texttt{keep\_alive} (default \texttt{10m}, configurable),
+      \item \texttt{options.num\_ctx} (prompt context size; default 2000, configurable).
+    \end{itemize}
+  \item Insert an assistant message into \texttt{chat} with:
+    \begin{itemize}[nosep]
+      \item \texttt{role = "assistant"},
+      \item \texttt{content = response text},
+      \item \texttt{model}, \texttt{session}, \texttt{created\_at}, \texttt{source\_node}.
+    \end{itemize}
+  \item Return the response text.
+\end{enumerate}
+
+\subsection{Recall and System Prompt}
+
+\paragraph{FR-7: Recall Statements}
+
+The system shall provide:
+
+\begin{verbatim}
+(all-statements)
+(facts)
+(desires)
+(opinions)
+(backlog-items)
+\end{verbatim}
+
+\begin{itemize}[nosep]
+  \item \texttt{all-statements} returns all rows from \texttt{statements}, sorted by \texttt{created\_at}.
+  \item \texttt{facts}, \texttt{desires}, \texttt{opinions} filter by \texttt{kind}.
+  \item \texttt{backlog-items} returns statements marked as backlog tasks.
+\end{itemize}
+
+\paragraph{FR-8: Build System Prompt}
+
+The system shall provide:
+
+\begin{verbatim}
+(build-system-prompt)
+\end{verbatim}
+
+This function shall:
+
+\begin{itemize}[nosep]
+  \item Collect facts, desires, opinions, and optionally a summary of backlog items.
+  \item Include node id/location (from config) for context.
+  \item Include recent chat history up to the configured window.
+  \item Include rolling summaries: when unsummarized history exceeds \$1.5 \times\$ the configured window, the oldest \$N\$ messages (window size) are summarized FIFO and stored; summaries are included in the prompt.
+  \item Serialize them into a structured system message, for example:
+  \item Optional RAG: when enabled, relevant facts/summaries from SQLite embeddings (via an Ollama embedding model) are pulled into a RAG CONTEXT block in the system prompt (top-K, score threshold configurable).
+
+\begin{verbatim}
+You are Milla, the user's local assistant.
+
+FACTS:
+- ...
+
+DESIRES:
+- ...
+
+OPINIONS:
+- ...
+
+BACKLOG (for reference, do not execute actions):
+- ...
+\end{verbatim}
+
+\end{itemize}
+
+By default, \texttt{ask!} or a wrapper may use \texttt{build-system-prompt} whenever a caller does not specify an explicit \texttt{system} prompt.
+
+\subsection{Multi-node Synchronization (Kittens)}
+
+\paragraph{FR-9: Node Identification}
+
+Each node (home Milla or kitten) shall have a configurable \texttt{node\_id} string, such as:
+
+\begin{itemize}[nosep]
+  \item \texttt{"home-milla"},
+  \item \texttt{"car-kitten"},
+  \item \texttt{"laptop-kitten"}.
+\end{itemize}
+
+The \texttt{node\_id} shall be stored with each row in both \texttt{statements} and \texttt{chat} as \texttt{source\_node}.
+
+\paragraph{FR-10: One-way Sync Script}
+
+The script \texttt{bin/milla-sync-db} shall support:
+
+\begin{verbatim}
+./bin/milla-sync-db pull user@host:/path/to/milla_memory.db
+./bin/milla-sync-db push user@host:/path/to/milla_memory.db
+\end{verbatim}
+
+MVP behavior:
+
+\begin{itemize}[nosep]
+  \item Use \texttt{rsync} over SSH to copy the remote DB to a local temporary file (for pull), or copy the local DB to the remote path (for push).
+  \item After a pull, invoke a Clojure-based merge function to incorporate remote rows into the local DB.
+\end{itemize}
+
+\paragraph{FR-11: Merge Strategy}
+
+The merge function (e.g., in \texttt{milla.sync/merge}) shall:
+
+\begin{enumerate}[nosep]
+  \item Attach the remote DB as a secondary database in SQLite.
+  \item For each relevant table (\texttt{statements}, \texttt{chat}):
+    \begin{itemize}[nosep]
+      \item Insert rows from the remote table into the local table where they do not already exist, based on:
+        \begin{itemize}[nosep]
+          \item ID, or
+          \item a generated UUID, or
+          \item a uniqueness heuristic on \texttt{(source\_node, created\_at, kind, text)}.
+        \end{itemize}
+    \end{itemize}
+  \item Conflicts (e.g., same ID but different content) shall be logged and skipped in the first version.
+\end{enumerate}
+
+\subsection{Remote Emacs Operation}
+
+\paragraph{FR-12: Support for Remote REPL}
+
+The system shall be usable with at least the following workflows:
+
+\begin{enumerate}[nosep]
+  \item \textbf{SSH + Tmux + Emacs on Milla}:
+    \begin{itemize}[nosep]
+      \item User SSHs into Milla.
+      \item Starts \texttt{tmux}.
+      \item Runs Emacs on Milla.
+      \item Uses \texttt{M-x cider-jack-in-clj} inside the \texttt{milla-clj} project.
+    \end{itemize}
+  \item \textbf{Local Emacs + TRAMP}:
+    \begin{itemize}[nosep]
+      \item Open remote files via TRAMP (e.g., \texttt{/ssh:dan@milla:/home/dan/src/milla-clj/...}).
+      \item Start a remote CIDER REPL via TRAMP-aware jack-in or \texttt{cider-connect} to a remote nREPL port.
+    \end{itemize}
+\end{enumerate}
+
+The project shall be a standard Clojure CLI project (\texttt{deps.edn}) and shall avoid hardcoded machine-specific paths outside of its own directory tree.
+
+\subsection{Self-Modification and Backlog-Driven Refactoring}
+
+\paragraph{FR-13: Proposal of Code Changes}
+
+Milla and her kittens may \emph{propose} changes to their own code and configuration, but those changes shall be captured as backlog items rather than applied blindly. For example:
+
+\begin{verbatim}
+(backlog "Refactor milla.core/ask! to support streaming responses.")
+(backlog "Add milla.memory namespace with smarter recall ranking.")
+\end{verbatim}
+
+Each such item shall be a record in \texttt{statements} (or a dedicated backlog table) and reviewed by a human before implementation.
+
+\paragraph{FR-14: Human-in-the-Loop Application}
+
+Any automated or semi-automated code modification mechanism (e.g., self-rewriting functions) shall:
+
+\begin{itemize}[nosep]
+  \item Operate on a separate working copy (e.g., a branch or temporary file),
+  \item Be subject to human review and explicit approval (e.g., \texttt{git diff}, tests),
+  \item Avoid directly mutating the live, running system without restart or explicit confirmation.
+\end{itemize}
+
+\paragraph{FR-15: Safety and Testing}
+
+A future self-modification workflow should ideally:
+
+\begin{enumerate}[nosep]
+  \item Generate candidate changes (patches, new functions, configuration tweaks).
+  \item Store them as backlog items with attached code snippets.
+  \item Allow running tests or checks (e.g., \texttt{clj -M:test}) before application.
+  \item Apply changes only after manual inspection.
+\end{enumerate}
+
+The initial version of Milla Brain does \emph{not} require fully autonomous self-modifying behavior; the specification only requires that proposals and backlog items be representable and traceable.
+
+\section{Database Design}
+
+\subsection{Tables}
+
+\subsubsection{\texttt{statements}}
+
+\begin{center}
+\begin{tabular}{llp{0.6\textwidth}}
+\textbf{Column} & \textbf{Type} & \textbf{Description} \\
+\hline
+\texttt{id}          & INTEGER & Primary key (auto-increment). \\
+\texttt{kind}        & TEXT    & \texttt{"fact"}, \texttt{"desire"}, \texttt{"opinion"}, \texttt{"backlog"}, etc. \\
+\texttt{text}        & TEXT    & The statement body. \\
+\texttt{created\_at} & TEXT    & ISO-8601 timestamp. \\
+\texttt{source\_node}& TEXT    & Node ID where this was created (e.g., \texttt{"home-milla"}). \\
+\end{tabular}
+\end{center}
+
+\subsubsection{\texttt{chat}}
+
+\begin{center}
+\begin{tabular}{llp{0.6\textwidth}}
+\textbf{Column} & \textbf{Type} & \textbf{Description} \\
+\hline
+\texttt{id}          & INTEGER & Primary key (auto-increment). \\
+\texttt{role}        & TEXT    & \texttt{"user"} or \texttt{"assistant"}. \\
+\texttt{model}       & TEXT    & Model name, e.g., \texttt{"llama3.2"}. \\
+\texttt{content}     & TEXT    & Message text. \\
+\texttt{session}     & TEXT    & Session identifier (nullable or default). \\
+\texttt{created\_at} & TEXT    & ISO-8601 timestamp. \\
+\texttt{source\_node}& TEXT    & Node ID (e.g., \texttt{"home-milla"}, \texttt{"car-kitten"}). \\
+\end{tabular}
+\end{center}
+
+\subsection{Logical Diagram (ASCII ERD)}
+
+\begin{verbatim}
++-------------------+           +-------------------+
+|    statements     |           |       chat        |
++-------------------+           +-------------------+
+| id          (PK)  |           | id          (PK)  |
+| kind        (T)   |           | role        (T)   |
+| text        (T)   |           | model       (T)   |
+| created_at  (T)   |           | content     (T)   |
+| source_node (T)   |           | session     (T?)  |
++-------------------+           | created_at  (T)   |
+                                | source_node (T)   |
+                                +-------------------+
+
+- statements: global knowledge (facts/desires/opinions/backlog)
+- chat: timeline of interactions with the model
+- source_node: where the row came from (for sync + auditing)
+- session: group of chat messages for a conversation
+\end{verbatim}
+
+\section{Setup and Scripts}
+
+\subsection{\texttt{bin/milla-init-db}}
+
+Purpose: ensure the SQLite schema is present without needing to call \texttt{ask!}.
+
+Example behavior:
+
+\begin{verbatim}
+#!/bin/sh
+cd "\$(dirname "\$0")/.."
+clj -M -e "(require 'milla.core)
+           (milla.core/init!)
+           (System/exit 0)"
+\end{verbatim}
+
+\subsection{\texttt{bin/milla} (CLI wrapper)}
+
+Purpose: friendly CLI for \texttt{ask!}.
+
+Example:
+
+\begin{verbatim}
+#!/bin/sh
+cd "\$(dirname "\$0")/.."
+clj -M -m milla.core "\$@"
+\end{verbatim}
+
+Usage:
+
+\begin{verbatim}
+./bin/milla llama3.2 "Say hello from Milla and mention Gabriel."
+\end{verbatim}
+
+\subsection{\texttt{bin/milla-sync-db}}
+
+Purpose: synchronize Milla Brain DB between home and a kitten using \texttt{rsync} and merge.
+
+\begin{itemize}[nosep]
+  \item Pull: \texttt{bin/milla-sync-db pull user@host:/path/to/milla\_memory.db} (rsyncs to \texttt{milla\_memory.remote.db}, then merges into local via \texttt{milla.sync/merge}).
+  \item Push: \texttt{bin/milla-sync-db push user@host:/path/to/milla\_memory.db} (rsyncs local to remote).
+\end{itemize}
+
+\section{Non-Functional Requirements}
+
+\subsection{Configuration}
+
+Runtime configuration is stored in a YAML file (by default \texttt{milla-config.yaml}; \texttt{config/milla.yaml} and \texttt{MILLA\_CONFIG} overrides are also supported). A sample configuration:
+
+\begin{verbatim}
+db:
+  path: milla_memory.db
+
+node:
+  id: home-milla
+  location: unknown
+
+ollama:
+  url: http://localhost:11434/api/chat
+  default_model: llama3.2
+  keep_alive: 10m
+
+chat:
+  default_session: default
+  history_limit: 50
+
+prompt:
+  max_tokens: 2000
+
+thermal:
+  enabled: false
+  max_c: 85
+  cooldown_ms: 120000
+  sensor_path: /sys/class/thermal/thermal_zone0/temp
+
+server:
+  port: 17863
+  pid_file: milla.pid
+  heartbeat_ms: 5000
+  # server refuses to start if heartbeat is fresh; restart via bin/milla-restart-server
+\end{verbatim}
+
+Merging: use \texttt{bin/milla-merge /path/to/output.db /path/to/db1 /path/to/db2} to union and dedupe statements/chat/chat\_summaries, then re-run summarization per session. Global summary: merge also writes a bullet summary of all chat into a \texttt{global\_summary} table.
+Global summary: merge also writes a bullet summary of all chat into a global_summary table.
+\paragraph{First-run setup}
+All helper scripts support -h/--help for usage info.
+
+Script \texttt{bin/milla-setup} prompts the user for node location, facts, desires, opinions, and backlog items and stores them via the Clojure API. It is optional but recommended on first launch.
+
+Conversation history strategy: keep the last 5 messages verbatim; summarize older messages into a rolling summary per session (included in the system prompt). Recent messages are trimmed to fit \texttt{prompt.max\_tokens} if needed.
+Token-aware trimming keeps the recent set within prompt.max_tokens before sending to Ollama.
+
+Environment variables can override specific keys (\texttt{MILLA\_DB\_PATH}, \texttt{MILLA\_NODE\_ID}, \texttt{MILLA\_NODE\_LOCATION}, \texttt{OLLAMA\_URL}, \texttt{OLLAMA\_MODEL}, \texttt{OLLAMA\_KEEP\_ALIVE}, \texttt{CHAT\_HISTORY\_LIMIT}, \texttt{MAX\_PROMPT\_TOKENS}, \texttt{MILLA\_DEFAULT\_SESSION}, or the path via \texttt{MILLA\_CONFIG}). Logging payloads can be disabled via \texttt{:log \{ :request\_bodies? false \}}, and the log is capped to 5MB.
+
+\paragraph{Custom tools}
+User-extensible helpers live in \texttt{src/milla/tools.clj}; standard JVM/Clojure libraries may be required there. Keep utilities small/pure to be safely callable from prompts or RAG helpers.
+
+\paragraph{Key entry points}
+\begin{itemize}[nosep]
+  \item \texttt{milla.core/ask!} — builds prompt (facts/desires/opinions/backlog + summaries + RAG context), sends to Ollama with retries/keep-alive, logs/stores chat rows.
+  \item \texttt{milla.core/retry*} — general retry wrapper used by Ollama calls.
+  \item \texttt{milla.core/chat-messages-by-session}, \texttt{recent-chat} — fetch chat history for trimming/summarization.
+  \item \texttt{milla.core/rag-context} — retrieve top-K embeddings matches for prompt context.
+  \item \texttt{milla.core/append-log!} — bounded log writer (file + stderr for errors).
+\end{itemize}
+
+\section*{Self-edit (opt-in, constrained)}
+Disabled by default. Enable via \texttt{:self\_edit \{:enabled true :intent "rag-tools" :allow\_paths [\"src/milla/rag\" \"doc\"] :require\_user\_confirm true\}}. Exposed endpoints when enabled: \texttt{/code/list} (list allowed files), \texttt{/code/read} (POST JSON \{\texttt{"path": "..."}\}), and \texttt{/code/patch} (POST JSON \{\texttt{"path": "...", "old": "...", "new": "...", "intent": "rag-tools", "confirmed?": true }\}) which performs a single replace with a timestamped backup. Requests are rejected with 403 when disabled and 400 if intent/confirmation is missing. Intended for human-in-the-loop customization of RAG tooling; no automatic execution of new code is performed by the server.
+
+\section*{License}
+Milla is released under the GNU Affero General Public License v3.0 (AGPL-3.0). Refer to the bundled \texttt{LICENSE} file for the full legal text.
+
+\begin{itemize}[nosep]
+  \item \textbf{Portability}: runs on Linux and should be portable to macOS/BSD, assuming Java, Clojure CLI, SQLite, and Ollama are available.
+  \item \textbf{Simplicity}: favor clear, small scripts and Clojure namespaces that are easy to inspect and debug.
+  \item \textbf{Transparency}: the SQLite DB shall be easy to inspect with \texttt{sqlite3} for debugging/backups.
+  \item \textbf{Durability}: DB sync shall never silently destroy data; conflicts shall be logged and require manual resolution.
+\item \textbf{Safety of Self-Modification}: any self-modifying behavior shall be human-in-the-loop and test-gated, with proposals captured via backlog items rather than applied silently.
+\end{itemize}
+
+\section*{Backlog / To Do}
+\begin{itemize}[nosep]
+  \item Pare down runtime dependencies and kernel modules for a minimal Ubuntu/Raspberry Pi deployment footprint.
+  \item Add CI/static checks around self-edit endpoints and patch validation.
+  \item Harden optional CGI deployment (auth/IP allowlist, rate limiting).
+  \item Expand prompt/RAG regression tests (golden outputs, token-budget coverage).
+  \item Add integrations with standard calendars (e.g., Google Calendar) to schedule backlog items.
+\end{itemize}
+
+\end{document}

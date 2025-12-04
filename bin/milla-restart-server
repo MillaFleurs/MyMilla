@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+# Default config if not set
+if [ -z "${MILLA_CONFIG:-}" ] && [ -f "$HOME/milla/milla-config.yaml" ]; then
+  export MILLA_CONFIG="$HOME/milla/milla-config.yaml"
+fi
+
+# Resolve pid file from config
+PIDFILE=$(clj -M -e "(require 'milla.server) (println (.getAbsolutePath (milla.server/pid-file)))" 2>/dev/null | tail -n 1)
+[ -z "$PIDFILE" ] && PIDFILE="${ROOT}/milla.pid"
+
+# Stop if running
+if [ -f "$PIDFILE" ]; then
+  PID=$(grep -o '"pid":[^,}]*' "$PIDFILE" | sed 's/[^0-9]//g')
+fi
+
+if [ -n "${PID:-}" ] && ps -p "$PID" >/dev/null 2>&1; then
+  echo "Stopping existing milla.server pid $PID..."
+  kill "$PID" || true
+  sleep 1
+elif pgrep -f "milla.server" >/dev/null 2>&1; then
+  echo "Stopping existing milla.server via pkill..."
+  pkill -f "milla.server" || true
+  sleep 1
+fi
+
+rm -f "$PIDFILE"
+
+# Help
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-?" ]; then
+  echo "Usage: $0 (restarts daemon; inherits MILLA_CONFIG)"
+  exit 0
+fi
+
+# Start server in background (inherits environment, including MILLA_CONFIG if set)
+LOG="/tmp/milla-serve.log"
+nohup "$ROOT/bin/milla-serve" "$@" >"$LOG" 2>&1 &
+PID=$!
+echo "Started milla server (pid $PID)"
+sleep 2
+if ! ps -p "$PID" >/dev/null 2>&1; then
+  echo "milla server failed to start. See $LOG for details." >&2
+  exit 1
+fi
+HBFILE="$PIDFILE"
+
+# Wait for heartbeat up to 10s
+FOUND=0
+for i in $(seq 1 10); do
+  if [ -f "$HBFILE" ]; then
+    FOUND=1
+    break
+  fi
+  sleep 1
+done
+
+HOST="127.0.0.1"
+if [ "$FOUND" -eq 1 ]; then
+  PORT=$(grep -o '"port":[^,}]*' "$HBFILE" | head -n1 | sed 's/[^0-9]//g')
+  H=$(grep -o '"host":[^,}]*' "$HBFILE" | head -n1 | sed 's/.*"://; s/[\",} ]//g')
+  [ -n "$H" ] && HOST="$H"
+  HB=$(cat "$HBFILE")
+  echo "Heartbeat: $HB"
+else
+  echo "Warning: pid file $HBFILE not found after start." >&2
+fi
+
+if [ -n "${PORT:-}" ]; then
+  if lsof -iTCP -sTCP:LISTEN -P | grep -q "${HOST}:${PORT}"; then
+    echo "Listening confirmed on ${HOST}:${PORT}"
+  else
+    echo "Warning: did not detect listener on ${HOST}:${PORT} yet." >&2
+  fi
+fi
+
+echo "Logs: $LOG"

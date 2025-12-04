@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-?" ]; then
+  echo "Usage: $0 (drops and recreates DB schema via milla.core/reset-db!)"
+  exit 0
+fi
+
+exec clj -M -e "(require 'milla.core) (println \"Reset DB at\" (milla.core/reset-db!))"

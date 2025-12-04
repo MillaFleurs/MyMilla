@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-?" ]; then
+  echo "Usage: $0 (dumps statements and chat tables via sqlite3)"
+  exit 0
+fi
+
+# Resolve DB path using milla.core (respects MILLA_CONFIG/env overrides).
+DB_PATH=$(clj -M -e "(require 'milla.core) (println (milla.core/db-path))" | tail -n 1)
+
+if ! command -v sqlite3 >/dev/null 2>&1; then
+  echo "sqlite3 not found on PATH" >&2
+  exit 1
+fi
+
+if [ ! -f "$DB_PATH" ]; then
+  echo "DB not found at $DB_PATH" >&2
+  exit 1
+fi
+
+echo "# statements"
+sqlite3 -header -csv "$DB_PATH" "select * from statements;"
+echo
+echo "# chat"
+sqlite3 -header -csv "$DB_PATH" "select * from chat;"

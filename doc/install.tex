@@ -1,0 +1,154 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{hyperref}
+\setlength{\parskip}{0.7em}
+\setlength{\parindent}{0pt}
+
+\title{Milla Brain Install Guide}
+\author{Project Docs}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section*{Prerequisites}
+\begin{itemize}
+  \item OS: Ubuntu Linux (or similar). Works on macOS with analogous tools.
+  \item Java (OpenJDK) and Clojure CLI (\texttt{clj}).
+  \item SQLite available on the system.
+  \item Ollama running locally at \texttt{http://localhost:11434} with a model name matching your config (e.g., \texttt{llama3.2}).
+\end{itemize}
+
+\section*{Install prerequisites on Ubuntu}
+\begin{verbatim}
+sudo apt-get update
+sudo apt-get install -y curl gnupg ca-certificates \
+    openjdk-21-jdk sqlite3
+
+# Install Clojure CLI
+curl -O https://download.clojure.org/install/linux-install-1.11.1.1435.sh
+chmod +x linux-install-1.11.1.1435.sh
+sudo ./linux-install-1.11.1.1435.sh
+
+# Install Ollama (from upstream; see https://ollama.com)
+curl -fsSL https://ollama.com/install.sh | sh
+\end{verbatim}
+
+\section*{Get the code}
+\begin{verbatim}
+git clone <repo-url> milla-clj
+cd milla-clj
+\end{verbatim}
+
+\section*{Configure}
+Runtime configuration is read from YAML in this order: \texttt{MILLA\_CONFIG} env var \textrightarrow{} \texttt{config/milla.yaml} \textrightarrow{} \texttt{milla-config.yaml} \textrightarrow{} \texttt{milla.yaml}. A sample is in \texttt{config/milla.yaml}:
+\begin{verbatim}
+db:
+  path: milla_memory.db
+node:
+  id: home-milla
+node:
+  id: home-milla
+  location: my-lab
+
+ollama:
+  url: http://localhost:11434/api/chat
+  default_model: llama3.2
+  keep_alive: 10m
+
+chat:
+  default_session: default
+  history_limit: 50
+
+prompt:
+  max_tokens: 2000
+
+thermal:
+  enabled: false
+  max_c: 85
+  cooldown_ms: 120000
+  sensor_path: /sys/class/thermal/thermal_zone0/temp
+
+server:
+  port: 17863
+  pid_file: milla.pid
+  heartbeat_ms: 5000
+
+log:
+  level: info
+  file: milla.log
+\end{verbatim}
+Environment overrides: \texttt{MILLA\_DB\_PATH}, \texttt{MILLA\_NODE\_ID}, \texttt{MILLA\_NODE\_LOCATION}, \texttt{OLLAMA\_URL}, \texttt{OLLAMA\_MODEL}, \texttt{OLLAMA\_KEEP\_ALIVE}, \texttt{CHAT\_HISTORY\_LIMIT}, \texttt{MAX\_PROMPT\_TOKENS}, \texttt{MILLA\_DEFAULT\_SESSION}, or \texttt{MILLA\_CONFIG}.
+
+\section*{Install dependencies}
+Dependencies are managed by Clojure CLI via \texttt{deps.edn}; no extra step is needed beyond having \texttt{clj} on PATH. The first run will download Maven deps automatically.
+
+\section*{Initialize the database}
+\begin{itemize}
+  \item Fast path: \texttt{bin/milla-init-db}
+  \item Or: \texttt{clj -M -e "(require 'milla.core) (milla.core/init!)"}
+\end{itemize}
+This creates \texttt{milla\_memory.db} and required tables (see \texttt{doc/schema.sql}).
+
+\section*{Run the server + prompt}
+Start the daemon (recommended for fast responses):
+\begin{verbatim}
+bin/milla-serve &
+# or restart cleanly: bin/milla-restart-server
+# stop daemon: bin/milla-stop
+# health: bin/milla-health
+# migrate schema: bin/milla-migrate
+\end{verbatim}
+
+Optional first-run helper:
+\begin{verbatim}
+bin/milla-setup
+\end{verbatim}
+
+All helper scripts accept \texttt{-h}/\texttt{--help}.
+
+Custom helpers can be added in \texttt{src/milla/tools.clj}; you may require JVM/Clojure standard libraries there to build small utilities (keep them pure/safe where possible).
+
+Core entry points to know: \texttt{milla.core/ask!} (builds prompt, sends to Ollama, logs chat), \texttt{milla.core/retry*} (retry wrapper), and \texttt{milla.core/append\_log!} (bounded logging).
+
+\paragraph{Optional CGI chat}
+The repo provides \texttt{cgi/milla.cgi} (Perl, requires \texttt{JSON}). It renders a simple chat UI with model dropdown (from \texttt{ollama list}) and buttons to reset the DB/session or download a DB dump (invokes \texttt{bin/milla}, \texttt{bin/milla-reset-db}, \texttt{bin/milla-dump-db} relative to the repo root).
+\begin{itemize}[nosep]
+  \item Install: copy/symlink \texttt{cgi/milla.cgi} into your web server's CGI path (e.g., \texttt{/usr/lib/cgi-bin}), \texttt{chmod 755} it, and ensure the repo \texttt{bin/} scripts are executable and reachable by the CGI user.
+  \item Env: set \texttt{MILLA_CONFIG} for non-default config; ensure the CGI user can read/write the configured DB/log paths. You may set \texttt{MILLA_ROOT} if the repo is outside the CGI working directory. The CGI user must have \texttt{JSON} Perl module installed and permission to run \texttt{ollama list} and the repo \texttt{bin/} scripts.
+\end{itemize}
+
+Then send prompts (CLI forwards to the server if running):
+\begin{verbatim}
+bin/milla llama3.2 "Hello, Milla"
+\end{verbatim}
+Model argument is optional; if omitted, the configured \texttt{default\_model} is used. For REPL use: \texttt{clj -M:repl} then \texttt{(require 'milla.core)} and call \texttt{(milla.core/ask! {:prompt "Hi"})}.
+
+\section*{Sync (kittens)}
+\begin{itemize}
+  \item Pull from a remote node: \texttt{bin/milla-sync-db pull user@host:/path/to/milla\_memory.db}
+  \item Push to a remote node: \texttt{bin/milla-sync-db push user@host:/path/to/milla\_memory.db}
+\end{itemize}
+Pulling fetches \texttt{milla\_memory.remote.db} and merges it into the local DB via \texttt{milla.sync/merge} (dedupe by content/time/source).
+
+\section*{Merge two brains}
+\begin{verbatim}
+bin/milla-merge /path/to/output.db /path/to/db1 /path/to/db2
+\end{verbatim}
+Unions/dedupes statements/chat/chat\_summaries and reruns summarization per session.
+
+\section*{Self-edit (opt-in, constrained)}
+Disabled unless configured with \texttt{:self\_edit \{:enabled true :intent "rag-tools" :allow\_paths [\"src/milla/rag\" \"doc\"] :require\_user\_confirm true\}}. Endpoints (served by \texttt{bin/milla-serve}): \texttt{/code/list}, \texttt{/code/read} (POST JSON \{\texttt{"path": "..."}\}), and \texttt{/code/patch} (POST JSON \{\texttt{"path": "...", "old": "...", "new": "...", "intent": "rag-tools", "confirmed?": true}\}) which performs a guarded replace with a timestamped backup. Requests return 403 when self-edit is disabled or 400 if intent/confirmation is missing. Intended for human-in-the-loop customization of RAG tooling; no automatic execution.
+
+\section*{License}
+This project is released under the GNU Affero General Public License v3.0 (AGPL-3.0). See the bundled \texttt{LICENSE} file for full terms.
+
+\section*{Testing}
+\begin{verbatim}
+clj -M:test
+\end{verbatim}
+Runs basic smoke tests for init/ask/fact and Ollama retry behavior.
+
+\end{document}

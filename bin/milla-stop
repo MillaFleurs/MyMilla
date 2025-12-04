@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-?" ]; then
+  echo "Usage: $0 (stops daemon; inherits MILLA_CONFIG)"
+  exit 0
+fi
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+# Default config if not set
+if [ -z "${MILLA_CONFIG:-}" ] && [ -f "$HOME/milla/milla-config.yaml" ]; then
+  export MILLA_CONFIG="$HOME/milla/milla-config.yaml"
+fi
+
+PIDFILE=$(clj -M -e "(require 'milla.server) (println (.getAbsolutePath (milla.server/pid-file)))" 2>/dev/null | tail -n 1)
+[ -z "$PIDFILE" ] && PIDFILE="${ROOT}/milla.pid"
+
+if [ -f "$PIDFILE" ]; then
+  PID=$(grep -o '"pid":[^,}]*' "$PIDFILE" | sed 's/[^0-9]//g')
+fi
+
+if [ -n "${PID:-}" ] && ps -p "$PID" >/dev/null 2>&1; then
+  echo "Stopping milla.server pid $PID..."
+  kill "$PID" || true
+elif pgrep -f "milla.server" >/dev/null 2>&1; then
+  echo "Stopping milla.server via pkill..."
+  pkill -f "milla.server" || true
+else
+  echo "No milla.server process found."
+fi
+
+sleep 1
+
+if [ -f "$PIDFILE" ]; then
+  rm -f "$PIDFILE"
+  echo "Removed pid file $PIDFILE"
+fi

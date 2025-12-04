@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -ne 3 ]; then
+  echo "Usage: $0 /path/to/output.db /path/to/db1 /path/to/db2" >&2
+  exit 1
+fi
+
+case "$1" in
+  -h|--help|-?)
+    echo "Usage: $0 /path/to/output.db /path/to/db1 /path/to/db2"
+    exit 0;;
+esac
+
+OUT="$1"
+DB1="$2"
+DB2="$3"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+exec clj -M -m milla.merge "$OUT" "$DB1" "$DB2"

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -lt 2 ]; then
+  echo "Usage: $0 [fact|desire|opinion|backlog] \"your text...\"" >&2
+  exit 1
+fi
+
+case "$1" in
+  -h|--help|-?)
+    echo "Usage: $0 [fact|desire|opinion|backlog] \"your text...\""
+    exit 0;;
+esac
+
+TYPE="$1"; shift
+TEXT="$*"
+
+case "$TYPE" in
+  fact|desire|opinion|backlog) ;;
+  *) echo "Invalid type: $TYPE (must be fact|desire|opinion|backlog)" >&2; exit 1 ;;
+esac
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+clj -M -e "(require 'milla.core) ((resolve (symbol \"milla.core\" \"${TYPE}\")) \"$TEXT\") (println \"Added\" \"$TYPE\" \"->\" \"$TEXT\")"

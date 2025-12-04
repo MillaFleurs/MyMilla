@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -ne 2 ]; then
+  echo "Usage: $0 [pull|push] user@host:/path/to/milla_memory.db"
+  exit 1
+fi
+
+MODE="$1"
+REMOTE="$2"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+LOCAL_DB="$ROOT/milla_memory.db"
+
+case "$MODE" in
+  -h|--help|-?)
+    echo "Usage: $0 [pull|push] user@host:/path/to/milla_memory.db"
+    exit 0;;
+  pull)
+    rsync -avz "$REMOTE" "$ROOT/milla_memory.remote.db"
+    echo "Pulled remote DB to $ROOT/milla_memory.remote.db"
+    echo "Merging into $LOCAL_DB ..."
+    clj -M -m milla.sync merge "$ROOT/milla_memory.remote.db"
+    ;;
+  push)
+    rsync -avz "$LOCAL_DB" "$REMOTE"
+    echo "Pushed $LOCAL_DB to $REMOTE"
+    ;;
+  *)
+    echo "Usage: $0 [pull|push] user@host:/path/to/milla_memory.db"
+    exit 1
+    ;;
+esac
