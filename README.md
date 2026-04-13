@@ -1,3 +1,15 @@
+# Thank You!
+
+I want to thank everyone for their interest in MyMilla. Originally built for the ARM AI 2025 Hackathon, this project taught me a tremendous amount, but over the past few months I've come to recognize that several existing projects accomplish what I was aiming for here, and do it better than I did or likely could.
+
+For that reason, I've decided to archive MyMilla. The lessons learned are still very much alive in my current work, particularly  [N184](https://github.com/MillaFleurs/N184/) , and I'd encourage you to check it out.
+
+You're always welcome to reach outI love feedback and talking shop about the future of AI.
+
+Thank you,
+
+Dan
+
 # Milla Brain (Clojure + Ollama)
 
 Clojure-based wrapper around a local Ollama instance with a tiny memory DSL (`fact`, `desire`, `opinion`, `backlog`) and chat logging to SQLite.
